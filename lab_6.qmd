@@ -1,0 +1,391 @@
+---
+title: "lab_6"
+---
+
+```{r}
+library(sf)
+library(tmap)
+library(rosm)
+library(spdep)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+```
+
+```{r}
+# Read the file in
+br <- read_sf("gds-main/data/UK-brexit/brexit.gpkg")
+```
+
+```{r}
+base = osm.raster(br)
+
+tm_shape(base) + tm_rgb() +
+  tm_shape(br) +  
+  tm_borders(col = "white", lwd = 0.5) +  
+  tm_fill(col = "coral1", alpha=0.5) +
+  tm_compass(position = c("left", "top")) + 
+  tm_scale_bar(position = c("right", "bottom")) 
+```
+
+```{r}
+# list all adjacent polygons for each polygon
+nb_q <- poly2nb(br, queen = TRUE) # Construct neighbours list from polygon list
+```
+
+```{r}
+w_queen <- nb2listw(nb_q, style = "B", zero.policy=TRUE) # Create a spatial weights matrix using queen contiguity
+```
+
+```{r}
+isolates <- which(w_queen$neighbours == "0")
+isolates
+```
+
+```{r}
+br <- br[-c(isolates),]
+br
+```
+
+```{r}
+# list all adjacent polygons for each polygon
+nb_q <- poly2nb(br, queen = TRUE) # Construct neighbours list from 
+w_queen_std <- nb2listw(nb_q, style = "W") # Create a spatial weights matrix using queen contiguity and row-standardardised weights
+```
+
+```{r}
+w_queen_std
+```
+
+```{r}
+br$w_Pct_Leave <- lag.listw(w_queen_std, br$Pct_Leave)
+```
+
+```{r}
+br
+```
+
+```{r}
+head(br$Pct_Leave)
+```
+
+```{r}
+br$Pct_Leave_std <- (br$Pct_Leave - mean(br$Pct_Leave))/sd(br$Pct_Leave)
+br$w_Pct_Leave_std <- lag.listw(w_queen_std, br$Pct_Leave_std)
+```
+
+```{r}
+# Create a standardized Moran plot using ggplot2
+moran_plot_z <- ggplot(br, aes(x=Pct_Leave, y=w_Pct_Leave_std)) + 
+  geom_point() +
+  geom_smooth(method=lm) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_vline(aes(xintercept = 0)) +
+  labs(title="Standardised Moran plot", x="% Leave z-score", y = "Lagged % leave")
+
+# Apply a minimal theme to the standardized Moran plot
+moran_plot_z + theme_minimal()  
+```
+
+```{r}
+moran.mc(br$Pct_Leave, w_queen_std, nsim=1000, alternative="greater")
+```
+
+```{r}
+# Create a standardized Moran plot using ggplot2
+moran_plot_z <- ggplot(br, aes(x=Pct_Leave_std, y=w_Pct_Leave_std)) + 
+  geom_point() +
+  geom_smooth(method=lm) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_vline(aes(xintercept = 0)) +
+  labs(title="Standardised Moran plot", x="% Leave z-score", y = "Lagged % leave") +
+  geom_label(aes(x=2.0, y=0.5, label="HH")) + 
+  geom_label(aes(x=1.5, y=-1.5, label="HL")) + 
+  geom_label(aes(x=-2, y=1.0, label="LH")) + 
+  geom_label(aes(x=-1.5, y=-2.5, label="LL")) 
+
+# Apply a minimal theme to the standardized Moran plot
+moran_plot_z + theme_minimal()  
+```
+
+```{r}
+lisa_perm <- localmoran_perm(br$Pct_Leave, w_queen_std, nsim=1000, alternative="two.sided")
+head(lisa_perm)
+```
+
+```{r}
+quadrants <- hotspot(lisa_perm, Prname="Pr(z != E(Ii)) Sim", cutoff=0.1)
+quadrants
+```
+
+```{r}
+br$quadrant <- as.character(quadrants)  %>% replace_na("Not significant")
+```
+
+```{r}
+head(br)
+```
+
+```{r}
+map_pct <- tmap::tm_shape(br) +
+  tmap::tm_fill(col = "Pct_Leave", palette = viridisLite::viridis(6), title="% Leave voters") +
+  tm_borders(col = "black", lwd = 0.3)+
+  labs(title = "% Leave voters")+
+  tm_compass(position = c(0.01, 0.03)) + 
+  tm_scale_bar(position = c(0.6, 0.03)) + 
+  tm_layout(legend.text.size = 0.5, inner.margins = c(0.1, 0.1, 0.02, 0.05), legend.position = c(0.65,0.76), legend.width=0.5, bg.color="aliceblue") 
+
+borders <- tm_shape(br) + 
+  tm_fill() +
+  tm_borders(col = "black", lwd = 0.3)
+
+hh <- br %>% dplyr::filter(quadrant == "High-High")
+hh_map <- tm_shape(hh) +  
+  tm_fill(col = "royalblue2", alpha=0.8)
+
+ll <- br %>% dplyr::filter(quadrant == "Low-Low")
+ll_map <- tm_shape(ll) +  
+  tm_fill(col = "red2", alpha=0.8)
+
+lh <- br %>% dplyr::filter(quadrant == "Low-High")
+lh_map <- tm_shape(lh) +  
+  tm_fill(col = "gold", alpha=0.8)
+
+ns <- br %>% dplyr::filter(quadrant == "Not significant")
+ns_map <- tm_shape(ns) +  
+  tm_fill(col = "lightgrey", alpha=0.8)
+
+
+# Combine all the maps, add compass, scale bar, and legend
+final_map_cluster <- borders +
+  hh_map + ll_map + lh_map + ns_map +
+  tm_compass(position = c(0.01, 0.03)) + 
+  tm_scale_bar(position = c(0.6, 0.03)) + 
+  tm_add_legend(type = "fill", col = c("royalblue2", "red2", "darkgreen", "gold", "lightgrey"), 
+                labels = c("High-High", "Low-Low", "High-Low", "Low-High", "Not significant"), title = "LISA cluster") +
+  tm_layout(legend.text.size = 0.5, inner.margins = c(0.1, 0.1, 0.02, 0.05), legend.position = c(0.65,0.75), legend.width=0.5, bg.color="aliceblue")
+
+tmap_arrange(map_pct, final_map_cluster)
+```
+
+```{r}
+color_values <- c(`High-High` = "royalblue2", 
+                  `Low-Low` = "red2", 
+                  `High-Low` = "darkgreen",
+                  `Low-High` = "gold", 
+                  `Not significant` = "lightgrey")
+
+moranLISA <- ggplot(br, aes(x=Pct_Leave_std, 
+               y=w_Pct_Leave_std,
+               fill = quadrant)) + 
+  geom_point(color = "black", shape = 21, size = 2) + 
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  scale_fill_manual(values=color_values) +
+  labs(title="Standardised Moran plot",
+        x="% Leave z-score", 
+        y = "Lagged % leave",
+        fill = "Cluster type")
+
+moranLISA
+```
+
+```{r}
+library(sf)
+library(tidyverse)
+lsoas <- read_sf("gds-main/data/Liverpool/Access_to_Healthy_Assets_and_Hazards_AHAH/Local_Authority_Districts/E08000012/shapefiles/E08000012.shp")
+```
+
+```{r}
+plot(lsoas)
+```
+
+```{r}
+ahah_data <- read.csv("gds-main/data/Liverpool/Access_to_Healthy_Assets_and_Hazards_AHAH/Local_Authority_Districts/E08000012/tables/E08000012.csv") # import
+```
+
+```{r}
+ahah_data_sf <- left_join(lsoas, 
+                       ahah_data, 
+                       by=c("lsoa11cd"="lsoa11cd"))
+```
+
+## **Task I: get the dataset ready**
+
+With the `ahah`, complete all the other bits required for the ESDA analysis of spatial autocorrelation:
+
+-   Make sure your geography does not have any neighbourless polygons
+
+-   When creating your spatial weights matrix, think of one criterion to build it that you think would fit this variable (e.g. contiguity, distance-based, etc.), and apply it.
+
+-   Create a spatial weights matrix
+
+-   Standardise the spatial weights matrix
+
+-   Create the standardised version of the AHAH score
+
+-   Create the spatial lag of the main AHAH score
+
+```{r}
+# list all adjacent polygons for each polygon
+nb_q_ahah <- poly2nb(ahah_data_sf, queen = TRUE) # Construct neighbours list from polygon list
+```
+
+```{r}
+w_queen_ahah <- nb2listw(nb_q_ahah, style = "W") # Create a spatial weights matrix using queen contiguity
+```
+
+```{r}
+summary(w_queen_ahah)
+```
+
+```{r}
+ahah_data_sf$w_lsoa11cd <- lag.listw(w_queen_ahah, ahah_data_sf$ahah)
+```
+
+```{r}
+head(ahah_data_sf$ahah)
+```
+
+```{r}
+head(ahah_data_sf$w_lsoa11cd)
+```
+
+```{r}
+w_queen_ahah$neighbours[[1]]
+```
+
+```{r}
+ahah_data_sf$ahah[[2]]
+```
+
+```{r}
+ahah_data_sf$ahah[[149]]
+ahah_data_sf$ahah[[155]]
+ahah_data_sf$ahah[[221]]
+```
+
+```{r}
+ahah_data_sf$ahah_std <- (ahah_data_sf$ahah - mean(ahah_data_sf$ahah))/sd(ahah_data_sf$ahah)
+```
+
+```{r}
+ahah_data_sf$w_Ahah_std <- lag.listw(w_queen_ahah, ahah_data_sf$ahah_std)
+```
+
+## **Task II: global spatial autocorrelation**
+
+Let\'s move on to the analytics:
+
+-   Visualise the main AHAH score with a Moran Plot
+
+-   Calculate Moran\'s I
+
+-   What conclusions can you reach from the Moran Plot and Moran\'s I? What\'s the main spatial pattern?
+
+```{r}
+# Create a standardized Moran plot using ggplot2
+moran_plot_z <- ggplot(ahah_data_sf, aes(x=ahah_std, y=w_Ahah_std)) + 
+  geom_point() +
+  geom_smooth(method=lm) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_vline(aes(xintercept = 0)) +
+  labs(title="Standardised Moran plot", x="% Leave z-score", y = "AHAH %")
+
+# Apply a minimal theme to the standardized Moran plot
+moran_plot_z + theme_minimal()  
+```
+
+```{r}
+moran.mc(ahah_data_sf$ahah, w_queen_ahah, nsim=1000, alternative="greater")
+```
+
+```{r}
+# Create a standardized Moran plot using ggplot2
+moran_plot_z <- ggplot(ahah_data_sf, aes(x=ahah_std, y=w_Ahah_std)) + 
+  geom_point() +
+  geom_smooth(method=lm) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_vline(aes(xintercept = 0)) +
+  labs(title="Standardised Moran plot", x="% AHAH  z-score", y = "AHAH %") +
+  geom_label(aes(x=2.0, y=0.5, label="HH")) + 
+  geom_label(aes(x=1.5, y=-1.5, label="HL")) + 
+  geom_label(aes(x=-2, y=1.0, label="LH")) + 
+  geom_label(aes(x=-1.5, y=-2.5, label="LL")) 
+
+# Apply a minimal theme to the standardized Moran plot
+moran_plot_z + theme_minimal()  
+```
+
+## **Task III: local spatial autocorrelation**
+
+Now that you have a good sense of the overall pattern in the AHAH dataset, let\'s move to the local scale:
+
+-   Calculate LISA statistics for the LSOA areas
+
+-   Make a map of significant clusters at the 5% significance level (i.e. setting cutoff at 0.05)
+
+-   Can you identify hotspots or coldspots? If so, what do they mean? What about spatial outliers?
+
+```{r}
+lisa_perm_ahah <- localmoran_perm(ahah_data_sf$ahah, w_queen_ahah, nsim=1000, alternative="two.sided")
+head(lisa_perm_ahah)
+```
+
+```{r}
+quadrants_ahah <- hotspot(lisa_perm_ahah, Prname="Pr(z != E(Ii)) Sim", cutoff=0.05)
+quadrants_ahah
+```
+
+```{r}
+ahah_data_sf$quadrant <- as.character(quadrants_ahah)  %>% replace_na("Not significant")
+```
+
+```{r}
+unique(ahah_data_sf$quadrant)
+```
+
+```{r}
+map_pct <- tmap::tm_shape(ahah_data_sf) +
+  tmap::tm_fill(col = "ahah", palette = viridisLite::viridis(6), title="% Access to healthy assets and hazards") +
+  tm_borders(col = "black", lwd = 0.3)+
+  labs(title = "% AHAH")+
+  tm_compass(position = c(0.01, 0.03)) + 
+  tm_scale_bar(position = c(0.6, 0.03)) + 
+  tm_layout(legend.text.size = 0.5, inner.margins = c(0.1, 0.1, 0.02, 0.05), legend.position = c(0.65,0.76), legend.width=0.5, bg.color="aliceblue") 
+
+borders <- tm_shape(ahah_data_sf) + 
+  tm_fill() +
+  tm_borders(col = "black", lwd = 0.3)
+
+hh <- ahah_data_sf %>% dplyr::filter(quadrant == "High-High")
+hh_map <- tm_shape(hh) +  
+  tm_fill(col = "royalblue2", alpha=0.8)
+
+ll <- ahah_data_sf %>% dplyr::filter(quadrant == "Low-Low")
+ll_map <- tm_shape(ll) +  
+  tm_fill(col = "red2", alpha=0.8)
+
+lh <- ahah_data_sf %>% dplyr::filter(quadrant == "Low-High")
+lh_map <- tm_shape(lh) +  
+  tm_fill(col = "gold", alpha=0.8)
+
+ns <- ahah_data_sf %>% dplyr::filter(quadrant == "Not significant")
+ns_map <- tm_shape(ns) +  
+  tm_fill(col = "lightgrey", alpha=0.8)
+
+
+# Combine all the maps, add compass, scale bar, and legend
+final_map_cluster <- borders +
+  hh_map + ll_map + ns_map +
+  tm_compass(position = c(0.01, 0.03)) + 
+  tm_scale_bar(position = c(0.6, 0.03)) + 
+  tm_add_legend(type = "fill", col = c("royalblue2", "red2", "darkgreen", "gold", "lightgrey"), 
+                labels = c("High-High", "Low-Low", "High-Low", "Low-High", "Not significant"), title = "LISA cluster") +
+  tm_layout(legend.text.size = 0.5, inner.margins = c(0.1, 0.1, 0.02, 0.05), legend.position = c(0.65,0.75), legend.width=0.5, bg.color="aliceblue")
+```
+
+```{r}
+tmap_arrange(map_pct, final_map_cluster)
+```
